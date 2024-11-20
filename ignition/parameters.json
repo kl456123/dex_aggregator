@@ -1,0 +1,9 @@
+{
+    "FillQuoteTransformerModule": {
+        "wrapperToken": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+    },
+    "DexAggregatorModule": {
+        "wrapperToken": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+        "contractOwner": "0xbd11861d13cafa8ad6e143da7034f8a907cd47a8"
+    }
+}
