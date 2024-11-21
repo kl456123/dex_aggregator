@@ -8,6 +8,7 @@ import "@openzeppelin/contracts/utils/Address.sol";
 import "./interfaces/IMultiplexFeature.sol";
 import "./interfaces/IEtherToken.sol";
 import "./multiplex/MultiplexTransformERC20.sol";
+import "./libs/LibERC20Transformer.sol";
 
 contract MultiplexFeature is IMultiplexFeature, MultiplexTransformERC20 {
     using Math for uint256;
@@ -69,78 +70,28 @@ contract MultiplexFeature is IMultiplexFeature, MultiplexTransformERC20 {
         }
     }
 
-    /// @dev Sells attached ETH for `outputToken` using the provided
-    ///      calls.
-    /// @param outputToken The token to buy.
-    /// @param calls The calls to use to sell the attached ETH.
-    /// @param minBuyAmount The minimum amount of `outputToken` that
-    ///        must be bought for this function to not revert.
-    /// @return boughtAmount The amount of `outputToken` bought.
-    function multiplexBatchSellEthForToken(IERC20 outputToken, BatchSellSubcall[] memory calls, uint256 minBuyAmount)
-        public
-        payable
-        override
-        returns (uint256 boughtAmount)
-    {
-        // Wrap ETH.
-        WETH.deposit{value: msg.value}();
-        // WETH is now held by this contract,
-        // so `useSelfBalance` is true.
-        return _multiplexBatchSell(
-            BatchSellParams({
-                inputToken: WETH,
-                outputToken: outputToken,
-                sellAmount: msg.value,
-                calls: calls,
-                useSelfBalance: true,
-                recipient: msg.sender
-            }),
-            minBuyAmount
-        );
-    }
-
-    /// @dev Sells `sellAmount` of the given `inputToken` for ETH
-    ///      using the provided calls.
-    /// @param inputToken The token to sell.
-    /// @param calls The calls to use to sell the input tokens.
-    /// @param sellAmount The amount of `inputToken` to sell.
-    /// @param minBuyAmount The minimum amount of ETH that
-    ///        must be bought for this function to not revert.
-    /// @return boughtAmount The amount of ETH bought.
-    function multiplexBatchSellTokenForEth(
-        IERC20 inputToken,
-        BatchSellSubcall[] memory calls,
-        uint256 sellAmount,
-        uint256 minBuyAmount
-    ) public override returns (uint256 boughtAmount) {
-        // The outputToken is implicitly WETH. The `recipient`
-        // of the WETH is set to  this contract, since we
-        // must unwrap the WETH and transfer the resulting ETH.
-        boughtAmount = _multiplexBatchSell(
-            BatchSellParams({
-                inputToken: inputToken,
-                outputToken: WETH,
-                sellAmount: sellAmount,
-                calls: calls,
-                useSelfBalance: true,
-                recipient: address(this)
-            }),
-            minBuyAmount
-        );
-        // Unwrap WETH.
-        WETH.withdraw(boughtAmount);
-        // Transfer ETH to `msg.sender`.
-        Address.sendValue(payable(msg.sender), boughtAmount);
-    }
-
     function multiplexBatchSellTokenForToken(
         IERC20 inputToken,
         IERC20 outputToken,
         BatchSellSubcall[] calldata calls,
         uint256 sellAmount,
         uint256 minBuyAmount
-    ) public override returns (uint256 boughtAmount) {
-        return _multiplexBatchSell(
+    ) public payable override returns (uint256 boughtAmount) {
+        if (LibERC20Transformer.isTokenETH(inputToken)) {
+            inputToken = WETH;
+            // Wrap ETH.
+            WETH.deposit{value: msg.value}();
+        }
+
+        address recipient;
+        bool isOutputTokenETH = LibERC20Transformer.isTokenETH(outputToken);
+        if (isOutputTokenETH) {
+            recipient = address(this);
+            outputToken = WETH;
+        } else {
+            recipient = msg.sender;
+        }
+        boughtAmount = _multiplexBatchSell(
             BatchSellParams({
                 inputToken: inputToken,
                 outputToken: outputToken,
@@ -151,6 +102,13 @@ contract MultiplexFeature is IMultiplexFeature, MultiplexTransformERC20 {
             }),
             minBuyAmount
         );
+
+        if (isOutputTokenETH) {
+            // Unwrap WETH.
+            WETH.withdraw(boughtAmount);
+            // Transfer ETH to `msg.sender`.
+            Address.sendValue(payable(msg.sender), boughtAmount);
+        }
     }
 
     function _multiplexBatchSell(BatchSellParams memory params, uint256 minBuyAmount)
@@ -165,95 +123,44 @@ contract MultiplexFeature is IMultiplexFeature, MultiplexTransformERC20 {
         require(boughtAmount >= minBuyAmount, "MultiplexFeature::_multiplexBatchSell/UNDERBOUGHT");
     }
 
-    /// @dev Sells attached ETH via the given sequence of tokens
-    ///      and calls. `tokens[0]` must be WETH.
-    ///      The last token in `tokens` is the output token that
-    ///      will ultimately be sent to `msg.sender`
-    /// @param tokens The sequence of tokens to use for the sell,
-    ///        i.e. `tokens[i]` will be sold for `tokens[i+1]` via
-    ///        `calls[i]`.
-    /// @param calls The sequence of calls to use for the sell.
-    /// @param minBuyAmount The minimum amount of output tokens that
-    ///        must be bought for this function to not revert.
-    /// @return boughtAmount The amount of output tokens bought.
-    function multiplexMultiHopSellEthForToken(
+    function multiplexMultiHopSellTokenForToken(
         address[] memory tokens,
-        MultiHopSellSubcall[] memory calls,
-        uint256 minBuyAmount
-    ) public payable override returns (uint256 boughtAmount) {
-        // First token must be WETH.
-        require(tokens[0] == address(WETH), "MultiplexFeature::multiplexMultiHopSellEthForToken/NOT_WETH");
-        // Wrap ETH.
-        WETH.deposit{value: msg.value}();
-        // WETH is now held by this contract,
-        // so `useSelfBalance` is true.
-        return _multiplexMultiHopSell(
-            MultiHopSellParams({
-                tokens: tokens,
-                sellAmount: msg.value,
-                calls: calls,
-                useSelfBalance: true,
-                recipient: msg.sender
-            }),
-            minBuyAmount
-        );
-    }
-
-    /// @dev Sells `sellAmount` of the input token (`tokens[0]`)
-    ///      for ETH via the given sequence of tokens and calls.
-    ///      The last token in `tokens` must be WETH.
-    /// @param tokens The sequence of tokens to use for the sell,
-    ///        i.e. `tokens[i]` will be sold for `tokens[i+1]` via
-    ///        `calls[i]`.
-    /// @param calls The sequence of calls to use for the sell.
-    /// @param sellAmount The amount of `inputToken` to sell.
-    /// @param minBuyAmount The minimum amount of ETH that
-    ///        must be bought for this function to not revert.
-    /// @return boughtAmount The amount of ETH bought.
-    function multiplexMultiHopSellTokenForEth(
-        address[] memory tokens,
-        MultiHopSellSubcall[] memory calls,
+        MultiHopSellSubcall[] calldata calls,
         uint256 sellAmount,
         uint256 minBuyAmount
-    ) public override returns (uint256 boughtAmount) {
-        // Last token must be WETH.
-        require(
-            tokens[tokens.length - 1] == address(WETH), "MultiplexFeature::multiplexMultiHopSellTokenForEth/NOT_WETH"
-        );
-        // The `recipient of the WETH is set to  this contract, since
-        // we must unwrap the WETH and transfer the resulting ETH.
+    ) public payable override returns (uint256 boughtAmount) {
+        if (LibERC20Transformer.isTokenETH(IERC20(tokens[0]))) {
+            tokens[0] = address(WETH);
+            // Wrap ETH.
+            WETH.deposit{value: msg.value}();
+        }
+
+        address recipient;
+        bool isOutputTokenETH = LibERC20Transformer.isTokenETH(IERC20(tokens[tokens.length - 1]));
+        if (isOutputTokenETH) {
+            recipient = address(this);
+            tokens[tokens.length - 1] = address(WETH);
+        } else {
+            recipient = msg.sender;
+        }
+
         boughtAmount = _multiplexMultiHopSell(
             MultiHopSellParams({
                 tokens: tokens,
                 sellAmount: sellAmount,
                 calls: calls,
                 useSelfBalance: true,
-                recipient: address(this)
+                recipient: recipient
             }),
             minBuyAmount
         );
-        // Unwrap WETH.
-        WETH.withdraw(boughtAmount);
-        // Transfer ETH to `msg.sender`.
-        Address.sendValue(payable(msg.sender), boughtAmount);
-    }
 
-    function multiplexMultiHopSellTokenForToken(
-        address[] calldata tokens,
-        MultiHopSellSubcall[] calldata calls,
-        uint256 sellAmount,
-        uint256 minBuyAmount
-    ) public override returns (uint256 boughtAmount) {
-        return _multiplexMultiHopSell(
-            MultiHopSellParams({
-                tokens: tokens,
-                sellAmount: sellAmount,
-                calls: calls,
-                useSelfBalance: true,
-                recipient: msg.sender
-            }),
-            minBuyAmount
-        );
+        if (isOutputTokenETH) {
+            // Unwrap WETH.
+            WETH.withdraw(boughtAmount);
+            // Transfer ETH to `msg.sender`.
+            Address.sendValue(payable(msg.sender), boughtAmount);
+        }
     }
 
     function _multiplexMultiHopSell(MultiHopSellParams memory params, uint256 minBuyAmount)

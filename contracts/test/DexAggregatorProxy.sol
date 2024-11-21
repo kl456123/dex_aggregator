@@ -6,6 +6,8 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
+import {LibERC20Transformer} from "../libs/LibERC20Transformer.sol";
+
 contract DexAggregatorProxy is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -43,20 +45,20 @@ contract DexAggregatorProxy is ReentrancyGuard {
 
         uint256 value;
 
-        if (fromToken == address(0)) {
+        if (LibERC20Transformer.isTokenETH(IERC20(fromToken))) {
             value = fromAmount;
         } else {
             IERC20(fromToken).safeTransferFrom(msg.sender, aggregator, fromAmount);
         }
 
         uint256 toTokenBalanceBefore;
-        if (toToken != address(0)) {
+        if (!LibERC20Transformer.isTokenETH(IERC20(toToken))) {
             toTokenBalanceBefore = IERC20(toToken).balanceOf(address(this));
         }
 
         Address.functionCallWithValue(aggregator, callData, value);
 
-        if (toToken == address(0)) {
+        if (LibERC20Transformer.isTokenETH(IERC20(toToken))) {
             uint256 balanceDiff = address(this).balance - ethBalanceBefore;
             if (balanceDiff > 0) {
                 Address.sendValue(payable(msg.sender), balanceDiff);
