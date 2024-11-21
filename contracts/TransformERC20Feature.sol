@@ -40,6 +40,7 @@ contract TransformERC20Feature is ITransformERC20Feature {
     function updateTransformer(address transformer, bool addFlag) external override {
         LibTransformERC20Storage.enforceIsContractOwner();
         LibTransformERC20Storage.updateTransformer(transformer, addFlag);
+        emit TransformerUpdated(transformer, addFlag);
     }
 
     function transformERC20(
@@ -99,13 +100,25 @@ contract TransformERC20Feature is ITransformERC20Feature {
         // Compute how much output token has been transferred to the recipient.
         state.recipientOutputTokenBalanceAfter = LibERC20Transformer.getTokenBalanceOf(args.outputToken, args.recipient);
         outputTokenAmount = state.recipientOutputTokenBalanceAfter - state.recipientOutputTokenBalanceBefore;
+
         // Ensure enough output token has been sent to the taker.
-        require(outputTokenAmount >= args.minOutputTokenAmount, "check minOutputToken failed");
+        if (outputTokenAmount < args.minOutputTokenAmount) {
+            LibTransformERC20RichErrors.IncompleteTransformERC20Error(
+                address(args.outputToken), outputTokenAmount, args.minOutputTokenAmount
+            ).rrevert();
+        }
+
+        // Emit an event.
+        emit TransformedERC20(
+            args.taker, address(args.inputToken), address(args.outputToken), args.inputTokenAmount, outputTokenAmount
+        );
     }
 
     function _executeTransformation(Transformation memory transformation, uint256 tokenLimits) private {
         address transformer = transformation.transformer;
-        require(LibTransformERC20Storage.isTransformerRegistered(transformer), "unregistered transformer");
+        if (!LibTransformERC20Storage.isTransformerRegistered(transformer)) {
+            LibTransformERC20RichErrors.UnregisteredTransformerError(transformer).rrevert();
+        }
         (bool success, bytes memory resultData) = transformer.delegatecall(
             abi.encodeWithSelector(
                 IERC20Transformer.transform.selector,
@@ -127,7 +140,8 @@ contract TransformERC20Feature is ITransformERC20Feature {
     /// @param to The recipient of tokens and ETH.
     function _transferInputTokensAndAttachedEth(TransformERC20Args memory args, address to) private {
         if (LibERC20Transformer.isTokenETH(args.inputToken) && msg.value < args.inputTokenAmount) {
-            revert("InsufficientEthAttachedError");
+            // Token is ETH, so the caller must attach enough ETH to the call.
+            LibTransformERC20RichErrors.InsufficientEthAttachedError(msg.value, args.inputTokenAmount).rrevert();
         }
 
         // Transfer input tokens.
